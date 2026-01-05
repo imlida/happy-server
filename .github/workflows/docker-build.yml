@@ -91,19 +91,22 @@ jobs:
             const run_id = context.runId;
             const run_url = `https://github.com/${owner}/${repo}/actions/runs/${run_id}`;
             
-            // 创建一个 Issue 来通知构建失败
+            const body = [
+              '## Docker 镜像构建失败',
+              '',
+              `**分支:** ${context.ref}`,
+              `**Commit:** ${context.sha}`,
+              `**触发者:** @${context.actor}`,
+              `**工作流运行:** [查看详情](${run_url})`,
+              '',
+              '请检查构建日志并修复问题。'
+            ].join('\n');
+            
             await github.rest.issues.create({
               owner,
               repo,
               title: `🚨 Docker Build Failed - ${context.sha.substring(0, 7)}`,
-              body: `## Docker 镜像构建失败
-              
-**分支:** ${context.ref}
-**Commit:** ${context.sha}
-**触发者:** @${context.actor}
-**工作流运行:** [查看详情](${run_url})
-
-请检查构建日志并修复问题。`,
+              body: body,
               labels: ['build-failure', 'automated']
             });
 
