@@ -1,0 +1,136 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/happy-server
+
+jobs:
+  build:
+    name: Build and Push Multi-Arch Docker Image
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            # 对于 main 分支推送，使用 latest 标签
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            # 使用 Git SHA 短标签
+            type=sha,prefix=,format=short
+            # 使用版本标签 (v1.0.0 -> 1.0.0)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            # 使用分支名称
+            type=ref,event=branch
+            # 使用 PR 编号
+            type=ref,event=pr
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      - name: Image digest
+        run: echo ${{ steps.build.outputs.digest }}
+
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: build
+    if: failure()
+    
+    steps:
+      - name: Send failure notification
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run_id = context.runId;
+            const run_url = `https://github.com/${owner}/${repo}/actions/runs/${run_id}`;
+            
+            // 创建一个 Issue 来通知构建失败
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title: `🚨 Docker Build Failed - ${context.sha.substring(0, 7)}`,
+              body: `## Docker 镜像构建失败
+              
+**分支:** ${context.ref}
+**Commit:** ${context.sha}
+**触发者:** @${context.actor}
+**工作流运行:** [查看详情](${run_url})
+
+请检查构建日志并修复问题。`,
+              labels: ['build-failure', 'automated']
+            });
+
+      # 可选：发送 Slack 通知
+      # - name: Send Slack notification
+      #   uses: 8398a7/action-slack@v3
+      #   with:
+      #     status: failure
+      #     fields: repo,message,commit,author,action,eventName,ref,workflow
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      # 可选：发送邮件通知
+      # - name: Send email notification
+      #   uses: dawidd6/action-send-mail@v3
+      #   with:
+      #     server_address: smtp.gmail.com
+      #     server_port: 465
+      #     username: ${{ secrets.EMAIL_USERNAME }}
+      #     password: ${{ secrets.EMAIL_PASSWORD }}
+      #     subject: Docker Build Failed - ${{ github.repository }}
+      #     body: |
+      #       Docker image build failed for ${{ github.repository }}.
+      #       
+      #       Branch: ${{ github.ref }}
+      #       Commit: ${{ github.sha }}
+      #       
+      #       Please check the workflow run for details.
+      #     to: your-email@example.com
+      #     from: GitHub Actions
